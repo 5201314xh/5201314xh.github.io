@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no">
+    <title>星际肉鸽战机·数值平滑解压版5.0</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: black; font-family: sans-serif; }
+        canvas { display: block; background: linear-gradient(to bottom, #01010a, #030312, #060618); }
+        #hud {
+            position: absolute; top: 10px; left: 10px; z-index: 10;
+            color: white; font-size: 13px; line-height: 1.6; font-family: monospace;
+        }
+        #bossBar {
+            position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+            width: 80%; height: 20px; background: #222; border: 2px solid red;
+            border-radius: 20px; overflow: hidden; display: none; z-index: 20;
+        }
+        #bossHp { height: 100%; width: 100%; background: linear-gradient(90deg, #ff0000, #ff8800); }
+        #bossShieldText {
+            position: absolute; width: 100%; text-align: center; color: white;
+            font-size: 12px; font-weight: bold; line-height: 16px; top: 0; display: none;
+        }
+        #skillPanel {
+            position: absolute; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.85);
+            display: none; justify-content: center; align-items: flex-end; padding-bottom: 80px; z-index: 100;
+        }
+        #skillContainer { display: flex; gap: 15px; }
+        .skill {
+            width: 105px; height: 135px; background: #181818; border-radius: 16px;
+            padding: 8px; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; color: white; font-size: 11px; text-align: center;
+            border: 3px solid white; cursor: pointer;
+        }
+        .skillIcon { font-size: 30px; margin-bottom: 8px; }
+        .lv1 { border-color: #e0e0e0; color: #e0e0e0; }
+        .lv2 { border-color: #cd7f32; color: #cd7f32; }
+        .lv3 { border-color: #a335ee; color: #a335ee; }
+        .lv4 { border-color: #ffd700; color: #ffd700; box-shadow: 0 0 15px gold; }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <div id="scoreText">得分: 0</div>
+        <div id="hpText">生命: ❤️❤️❤️</div>
+        <div id="shieldText">护盾: 无</div>
+        <div id="bossText">Boss倒计时: 120</div>
+    </div>
+
+    <div id="bossBar">
+        <div id="bossHp"></div>
+        <div id="bossShieldText">🛡️ 阶段防秒护盾激活中 🛡️</div>
+    </div>
+
+    <div id="skillPanel">
+        <div id="skillContainer"></div>
+    </div>
+
+    <canvas id="game"></canvas>
+
+    <script>
+        const canvas = document.getElementById("game");
+        const ctx = canvas.getContext("2d");
+        canvas.width = innerWidth; canvas.height = innerHeight;
+
+        let score = 0, gameOver = false, gameWin = false, panelOpen = false;
+        let bossSpawned = false, bossSummonTimer = 0, lastShot = 0;
+
+        const upgradeMilestones = [8, 25, 55, 100, 160, 240, 350, 480, 640, 850, 1100, 1400, 1800];
+        let currentMilestoneIndex = 0;
+        let nextUpgradeScore = upgradeMilestones[0];
+
+        let enemySpawnRate = 750;
+        let stars = [];
+        for (let i = 0; i < 100; i++) {
+            stars.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, r: Math.random() * 1.8, s: Math.random() * 1.2 + 0.2 });
+        }
+
+        const player = {
+            x: canvas.width / 2, y: canvas.height - 140, w: 40, h: 40,
+            hp: 3, maxHp: 3, shield: false, 
+            damage: 2.0, // ⚙️ 调整：初始伤害翻倍，从 1.0 提高到 2.0 拒绝刮痧
+            invincible: false, invincibleTimer: 0,
+            critRate: 0, critMult: 1.5, drones: 0, droneDamageMult: 1.0,
+            droneShootTimer: 0,
+            bossContactTimer: 0 // ⚙️ 新增：防Boss身体重叠连续烫血的独立冷却器
+        };
+
+        const bullets = [];
+        const enemies = [];
+        const particles = [];
+        const explosions = [];
+        const enemyBullets = []; 
+
+        const skills = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, G: 0, H: 0, I: 0 };
+
+        const skillData = {
+            A: [["🔫", "扇形散射"], ["🪞", "弹射+1"], ["💠", "弹射+2"], ["🌪", "弹道+1"]],
+            B: [["💣", "子弹体积+"], ["✨", "分裂小弹"], ["🌀", "小弹弹射"], ["⚡", "子弹穿透"]],
+            C: [["🔥", "中心变炸弹"], ["💥", "范围爆炸"], ["⚙", "增加射速"], ["☢", "增大爆炸"]],
+            D: [["🛡", "获得护盾"], ["♻", "30秒刷新"], ["👻", "缩小体积"], ["⚡", "10秒刷新"]],
+            E: [["❤️", "生命+1"], ["🧱", "生命+3变大"], ["💢", "生命+2/威+20%"], ["✨", "生命+2并缩小"]],
+            F: [["🔺", "+10%伤害"], ["🔸", "+30%伤害"], ["🟣", "+70%伤害"], ["👑", "+100%伤害"]],
+            G: [["🎯", "暴击率+10%"], ["💥", "爆伤+50%"], ["⚡", "暴击率至50%"], ["🔥", "爆伤+100%"]],
+            H: [["🛸", "召唤1架无人机"], ["🛸", "再召唤1架"], ["🛸", "再召唤1架"], ["💪", "无人机伤害+30%"]],
+            I: [["❄️", "40%概率减速30%"], ["🥶", "30%几率冻结1.5s"], ["🌪️", "80%减速/20%冻结"], ["⚔️", "对控敌伤害+20%"]]
+        };
+
+        let totalPausedTime = 0, lastPauseStart = 0;
+        let eliteSpawned20 = false, eliteSpawned40 = false;
+
+        fu
